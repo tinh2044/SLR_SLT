@@ -44,5 +44,52 @@ class BaseTokenizer(object):
     def __init__(self, tokenizer_cfg):
         self.tokenizer_cfg = tokenizer_cfg
     
-    def __call__():
+    def __call__(self):
         pass
+    
+    
+class TextTokenizer(BaseTokenizer):
+    def __init__(self, tokenizer_cfg: dict):
+        super(TextTokenizer, self).__init__(tokenizer_cfg)
+
+        self.level = tokenizer_cfg.get("level", "sentencepiece")
+
+        if self.level == "level":
+            self.min_freq = tokenizer_cfg.get("min_freq", 0)
+            with open(tokenizer_cfg['tokenizer_file'], 'r') as f:
+                tokenizer_info = json.load(f)
+
+            self.word2fre = tokenizer_info['word2fre']
+            self.special_tokens = tokenizer_info['special_tokens']
+
+            for w in sorted(self.word2fre.keys(), key=lambda x: self.word2fre[w][::-1]):
+                pass
+
+class BaseGlossTokenizer(BaseTokenizer):
+
+    def __init__(self, tokenizer_cfg: dict):
+        super().__init__(tokenizer_cfg)
+        with open(tokenizer_cfg['gloss_file'], 'r') as f:
+            self.gloss2id = pickle.load(f)
+
+        self.gloss2id = defaultdict(lambda : self.gloss2id['<unk>'], self.gloss2id)
+        self.id2gloss = {_id: _gloss for _id, _gloss in self.gloss2id}
+
+        self.is_lowercase = tokenizer_cfg.get("is_lowercase", True)
+
+
+    def tokens_to_ids(self, tokens):
+        if type(tokens) is list:
+            return [self.tokens_to_ids(x) for x in tokens]
+        else:
+            return self.gloss2id[tokens]
+
+    def ids_to_tokens(self, ids):
+        if type(ids) is list:
+            return [self.ids_to_tokens(x) for x in ids]
+        else:
+            return self.id2gloss[ids]
+
+    def __len__(self):
+        return len(self.gloss2id)
+
