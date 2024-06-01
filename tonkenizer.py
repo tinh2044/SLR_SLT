@@ -54,11 +54,74 @@ class TextTokenizer:
 
             self.word2fre = tokenizer_info['word2fre']
             self.special_tokens = tokenizer_info['special_tokens']
+            self.id2token = self.special_tokens[:]
 
             for w in sorted(self.word2fre.keys(), key=lambda x: self.word2fre[w][::-1]):
-                pass
+                f = self.word2fre[w]
 
+                if f >= self.min_freq:
+                    self.id2token.append(f)
 
+            self.token2id = {v: i for i, v in enumerate(self.id2token)}
+            self.pad_id = self.token2id['<pad>']
+            self.eos_id = self.token2id['</s>']
+            self.unk_id = self.token2id['<unk>']
+            self.sos = self.token2id['<s>']
+            self.ignore = self.pad_id
+        elif self.level == "sentencepiece":
+            self.tokenizer = MBartTokenizer(**tokenizer_cfg)
+
+            self.pad_id = self.tokenizer.convert_tokens_to_ids("<pad>")
+            self.ignore_id = self.pad_id
+            with open(tokenizer_cfg['pruneids_file'], 'r') as f:
+                self.pruneids = pickle.load(f)
+                for t in ["<pad>", "<s>", "</s>", "<unk>"]:
+                    _id = self.tokenizer.convert_tokens_to_ids(t)
+                    assert self.pruneids[_id] == _id, '{}->{}'.format(_id, self.pruneids[_id])
+                self.pruneids_reverse = {v:k for k, v in self.pruneids.items()}
+                self.lang_index = self.pruneids[self.tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)]
+                self.sos_index = self.lang_index
+                self.eos_index = self.pruneids[self.tokenizer.convert_tokens_to_ids('</s>')]
+        else:
+            raise ValueError
+
+    def generate_decoder_labels(self, input_ids):
+        decoder_labels = torch.where(
+            input_ids == self.lang_index,  # already be mapped into pruned_vocab
+            torch.ones_like(input_ids) * self.ignore_index, input_ids)
+        return decoder_labels
+
+    def generate_decoder_inputs(self, input_ids):
+        decoder_inputs = shift_tokens_right(input_ids,
+                                            pad_token_id=self.pad_index,
+                                            ignore_index=self.pad_index)
+        return decoder_inputs
+
+    def ids_to_prune(self, input_ids):
+        output_prunes = []
+
+        for seq in input_ids:
+            prune_seq = [self.pruneids[_id if _id in self.pruneids
+                            else self.tokenizer.convert_tokens_to_ids("<unk>")]
+                         for _id in seq]
+            output_prunes.append(prune_seq)
+        output_prunes = torch.tensor(output_prunes, dtype=torch.long)
+        return output_prunes
+
+    def prune_to_ids(self, input_prune):
+        batch_size, max_len = input_prune.shape
+        output_ids = input_prune.clone()
+
+        for b in range(batch_size):
+            for i in range(max_len):
+                _id = output_ids[b, i].item()
+                if _id not in self.pruneids_reverse:
+                    new_id = self.tokenizer.convert_tokens_to_ids("<unk>")
+                else:
+                    new_id = self.pruneids_reverse[_id]
+                output_ids[b, i] = new_id
+
+        return output_ids
 class BaseTokenizer:
 
     def __init__(self, tokenizer_cfg: dict):
