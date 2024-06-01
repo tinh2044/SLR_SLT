@@ -28,7 +28,7 @@ def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, ignore_index:
 
     assert pad_token_id is not None, "self.model.config.pad_token_id is has to be define"
 
-    prev_output_tokens.masked_fill_(prev_output_tokens == ignore_index, torch.tensor(pad_token_id))
+    prev_output_tokens.masked_fill_(prev_output_tokens == -100, torch.tensor(pad_token_id))
 
     idx_eos = (prev_output_tokens.ne(pad_token_id).sum(dim=1) - 1).unsqueeze(-1)
 
@@ -79,9 +79,9 @@ class TextTokenizer:
                     _id = self.tokenizer.convert_tokens_to_ids(t)
                     assert self.pruneids[_id] == _id, '{}->{}'.format(_id, self.pruneids[_id])
                 self.pruneids_reverse = {v:k for k, v in self.pruneids.items()}
-                self.lang_index = self.pruneids[self.tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)]
-                self.sos_index = self.lang_index
-                self.eos_index = self.pruneids[self.tokenizer.convert_tokens_to_ids('</s>')]
+                self.lang_id = self.pruneids[self.tokenizer.convert_tokens_to_ids(self.tokenizer.tgt_lang)]
+                self.sos_id = self.lang_id
+                self.eos_id = self.pruneids[self.tokenizer.convert_tokens_to_ids('</s>')]
         else:
             raise ValueError
 
@@ -93,8 +93,8 @@ class TextTokenizer:
 
     def generate_decoder_inputs(self, input_ids):
         decoder_inputs = shift_tokens_right(input_ids,
-                                            pad_token_id=self.pad_index,
-                                            ignore_index=self.pad_index)
+                                            pad_token_id=self.pad_id,
+                                            ignore_index=self.pad_id)
         return decoder_inputs
 
     def ids_to_prune(self, input_ids):
@@ -122,6 +122,70 @@ class TextTokenizer:
                 output_ids[b, i] = new_id
 
         return output_ids
+
+    def batch_decode(self, sequences):
+        sequences = sequences[:, 1:]
+        if self.level == "sentencepiece":
+            sequences = self.prune_to_ids(sequences)
+            decode_seqs = self.tokenizer.batch_decode(sequences, skip_special_tokens=True)
+            if "de" in self.tokenizer.tgt_lang:
+                for di, d in enumerate(decode_seqs):
+                    d = d[:-1] + " ."
+                    decode_seqs[di] = d
+        elif self.level == "word":
+            decode_seqs = [" ".join([s for s in seq]) for seq in sequences]
+
+        else:
+            raise ValueError
+
+        return decode_seqs
+
+    def __call__(self, input_str):
+        if self.level == "sentencepiece":
+            with self.tokenizer.as_target_tokenizer():
+                raw_outputs = self.tokenizer(input_str, return_attention_mask=True,
+                                             return_length=True, padding='longest')
+            outputs = {}
+            prune_inputs = self.ids_to_prune(raw_outputs['input_ids'])
+            outputs['label'] = self.generate_decoder_labels(prune_inputs)
+            outputs['decode_input_ids'] = self.generate_decoder_inputs(prune_inputs)
+
+        elif self.level == "word":
+            batch_labels, batch_decoder_input_ids, batch_lenghts = [[]]*3
+            for _str in input_str:
+                label =[]
+                input_ids =[self.sos_id]
+                for i, s in _str.split():
+                    _id = self.token2id[s]
+                    label.append(_id)
+                    input_ids.append(_id)
+                label.append(self.eos_id)
+
+                batch_labels.append(label)
+                batch_decoder_input_ids.append(input_ids)
+                batch_lenghts.append(len(label))
+
+            max_len = max(batch_lenghts)
+            padded_batch_labels, padded_batch_decoder_input_ids = [], []
+
+            for label, decoder_input_ids in zip(batch_labels, batch_decoder_input_ids):
+                pad_label = label + [self.pad_id]*(max_len - len(label))
+                pad_decoder_ids = decoder_input_ids + [self.ignore_id]*(max_len - len(decoder_input_ids))
+
+                assert  len(pad_label) == len(pad_decoder_ids), f"{len(pad_label)} is not equal to {len(pad_decoder_ids)}"
+                padded_batch_labels.append(pad_label)
+                padded_batch_decoder_input_ids.append(pad_decoder_ids)
+            outputs = {
+                "labels" : torch.tensor(padded_batch_labels),
+                "decoder_input_ids" : torch.tensor(padded_batch_decoder_input_ids)
+            }
+
+        else:
+            raise ValueError
+
+        return outputs
+
+
 class BaseTokenizer:
 
     def __init__(self, tokenizer_cfg: dict):
