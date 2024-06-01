@@ -87,8 +87,9 @@ class BaseTokenizer:
     def pad_seq(self, seq, maxlen, pad_id):
         len_seq = len(seq)
         if len_seq < maxlen:
-            seq += (maxlen - len_seq)*[pad_id]
+            seq += (maxlen - len_seq) * [pad_id]
         return seq
+
     def __len__(self):
         return len(self.gloss2id)
 
@@ -117,9 +118,8 @@ class TokenizerSignToGloss(BaseTokenizer):
         batch_gls_lengths, batch_gls_ids = [], []
 
         for i, seq in enumerate(batch_seq):
-
             # convert a sentence to list of its id
-            gls_ids = self.tokens_to_ids([x for x in seq.split()])
+            gls_ids = self.tokens_to_ids(seq.split())
             batch_gls_lengths.append(len(gls_ids))
 
             gls_ids = self.pad_seq(seq=gls_ids, maxlen=max_len, pad_id=self.pad_id)
@@ -131,6 +131,28 @@ class TokenizerSignToGloss(BaseTokenizer):
         return {"gls_len": batch_gls_lengths, "gls_ids": batch_gls_ids}
 
 
+class TokenizerGlossToText(BaseTokenizer):
+    def __init__(self, tokenizer_cfg):
+        super().__init__(tokenizer_cfg)
 
+        self.src_lang = tokenizer_cfg['src_lang']
 
+    def __call__(self, batch_seq):
+        max_len = max([len(gls.split()) for gls in batch_seq]) + 2
 
+        batch_gls_ids = []
+
+        attentions_mask = torch.zeros(len(batch_seq), max_len, dtype=torch.long)
+
+        for i, seq in enumerate(batch_seq):
+            gls_ids = self.tokens_to_ids(seq.split())
+            gls_ids = gls_ids + [self.gloss2id['</s>'], self.gloss2id[self.src_lang]]
+
+            attentions_mask[i, :len(gls_ids)] = 1
+
+            gls_ids = self.pad_seq(seq=gls_ids, maxlen=max_len, pad_id=self.gloss2id['<pad>'])
+            batch_gls_ids.append(gls_ids)
+
+        batch_gls_ids = torch.tensor(batch_gls_ids)
+
+        return {"input_ids": batch_gls_ids, "attention_mask": attentions_mask}
